@@ -1,0 +1,23 @@
+[Unit]
+Description=FrejaID Demo
+After=network.target
+
+[Service]
+Type=simple
+User=frejaid
+Group=frejaid
+WorkingDirectory=/opt/frejaid
+EnvironmentFile=/opt/frejaid/.env
+ExecStart=/opt/frejaid/frejaid
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/frejaid
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=frejaid
+
+[Install]
+WantedBy=multi-user.target
