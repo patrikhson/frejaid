@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS email_change_tokens;
+DROP TABLE IF EXISTS freja_merge_confirmations;
+DROP TABLE IF EXISTS freja_link_confirmations;
+DROP TABLE IF EXISTS webauthn_add_sessions;
+DROP TABLE IF EXISTS webauthn_login_sessions;
+DROP TABLE IF EXISTS registration_requests;
+DROP TABLE IF EXISTS webauthn_credentials;
+DROP TABLE IF EXISTS user_identities;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS users;

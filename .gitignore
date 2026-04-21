@@ -1,0 +1,8 @@
+.env
+*.db
+*.db-shm
+*.db-wal
+/frejaid
+/frejaid-server
+node_modules/
+dist/
