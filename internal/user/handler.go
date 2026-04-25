@@ -1,3 +1,5 @@
+// Package user provides HTTP handlers for authenticated user self-service:
+// editing the display name, viewing login methods, and changing the email address.
 package user
 
 import (
@@ -14,6 +16,7 @@ import (
 	"github.com/paftech/frejaid/internal/middleware"
 )
 
+// Handler holds shared dependencies for user HTTP handlers.
 type Handler struct {
 	db      *sql.DB
 	mailer  *mail.Mailer
@@ -30,9 +33,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, requireAuth func(http.Handl
 	mux.Handle("POST /settings/profile", requireAuth(http.HandlerFunc(h.saveProfile)))
 	mux.Handle("GET /settings/account", requireAuth(http.HandlerFunc(h.showAccount)))
 	mux.Handle("POST /settings/email", requireAuth(http.HandlerFunc(h.requestEmailChange)))
+	// Email-change confirmation is unauthenticated: the user may be clicking
+	// the link from a different browser/device than the one they're logged in on.
 	mux.HandleFunc("GET /auth/verify-email-change", h.confirmEmailChange)
 }
 
+// editProfile shows the display name edit form.
 func (h *Handler) editProfile(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	role := middleware.GetUserRole(r)
@@ -57,6 +63,9 @@ func (h *Handler) editProfile(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, layout.PageEnd())
 }
 
+// saveProfile handles the display name form submission.
+// An empty display_name clears the field (stored as NULL), which causes the
+// username (email) to be shown instead in all COALESCE(display_name, username) queries.
 func (h *Handler) saveProfile(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 
@@ -70,6 +79,8 @@ func (h *Handler) saveProfile(w http.ResponseWriter, r *http.Request) {
 		displayName = displayName[:80]
 	}
 
+	// Store NULL rather than an empty string when the user clears the field,
+	// so COALESCE(display_name, username) falls through to the email correctly.
 	var dnVal interface{} = displayName
 	if displayName == "" {
 		dnVal = nil
@@ -87,6 +98,10 @@ func (h *Handler) saveProfile(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/settings/account", http.StatusSeeOther)
 }
 
+// showAccount displays the account settings page with:
+//   - Login methods (passkey count + Freja eID link/unlink)
+//   - Display name management
+//   - Email change form
 func (h *Handler) showAccount(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	role := middleware.GetUserRole(r)
@@ -109,6 +124,7 @@ func (h *Handler) showAccount(w http.ResponseWriter, r *http.Request) {
 		userID,
 	).Scan(&frejaEmail)
 
+	// Flash messages: ?linked=freja or ?unlinked=freja after the link/unlink flows.
 	flash := r.URL.Query().Get("linked")
 	if flash == "" {
 		flash = r.URL.Query().Get("unlinked")
@@ -122,10 +138,13 @@ func (h *Handler) showAccount(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `<div class="alert alert-success">Freja eID updated successfully.</div>`)
 	}
 
+	// Login methods table.
 	fmt.Fprint(w, `<section><h3>Login methods</h3><table>`)
 	fmt.Fprintf(w, `<tr><td>Passkey</td><td>%d registered</td><td><a href="/settings/passkeys">Manage</a></td></tr>`, passkeyCount)
 
 	if frejaEmail != "" {
+		// Show an Unlink button only if the user has a passkey to fall back to.
+		// Without a passkey they would be locked out after unlinking Freja.
 		frejaUnlinkBtn := ""
 		if passkeyCount > 0 {
 			frejaUnlinkBtn = `<form method="POST" action="/settings/freja/unlink" style="display:inline">
@@ -157,6 +176,10 @@ func (h *Handler) showAccount(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, layout.PageEnd())
 }
 
+// requestEmailChange initiates an email address change.
+// We send a confirmation link to the NEW address rather than the old one.
+// This proves the user controls the new address and prevents the old address
+// holder from being notified of changes they did not request.
 func (h *Handler) requestEmailChange(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	ctx := r.Context()
@@ -167,6 +190,7 @@ func (h *Handler) requestEmailChange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Prevent switching to an email that is already in use by another account.
 	var taken bool
 	h.db.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM users WHERE LOWER(username)=? AND id!=?)`,
@@ -182,6 +206,7 @@ func (h *Handler) requestEmailChange(w http.ResponseWriter, r *http.Request) {
 		`SELECT COALESCE(display_name, username) FROM users WHERE id=?`, userID,
 	).Scan(&name)
 
+	// Generate a 32-character hex token (16 random bytes).
 	b := make([]byte, 16)
 	rand.Read(b)
 	token := hex.EncodeToString(b)
@@ -211,6 +236,10 @@ func (h *Handler) requestEmailChange(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, layout.PageEnd())
 }
 
+// confirmEmailChange processes the email change confirmation link.
+// The token is consumed atomically (DELETE … RETURNING) to prevent replay.
+// After the change, the Freja identity's provider_email is also updated
+// to stay in sync with the new email address.
 func (h *Handler) confirmEmailChange(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
 	if token == "" {
@@ -234,9 +263,13 @@ func (h *Handler) confirmEmailChange(w http.ResponseWriter, r *http.Request) {
 		`UPDATE users SET username=?, updated_at=datetime('now') WHERE id=?`, newEmail, userID,
 	)
 	if err != nil {
+		// UNIQUE constraint failure means the new email was taken between
+		// the request and confirmation — unlikely but possible.
 		http.Error(w, "Server error — email may already be in use.", http.StatusConflict)
 		return
 	}
+
+	// Keep the Freja identity's provider_email in sync so Freja login still works.
 	h.db.ExecContext(ctx,
 		`UPDATE user_identities SET provider_email=? WHERE user_id=? AND provider='freja'`,
 		newEmail, userID,

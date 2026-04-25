@@ -1,7 +1,16 @@
+// Package layout provides reusable HTML page wrappers for authenticated pages.
+//
+// There are two layout families:
+//   - PageStart / PageEnd      — standard authenticated page with site nav
+//   - AdminPageStart / AdminPageEnd — wide admin layout with breadcrumb bar
+//
+// All pages link the shared site.css stylesheet built by Tailwind CSS.
+// Public (unauthenticated) pages use the publicPage() helper in auth/handler.go.
 package layout
 
 import "fmt"
 
+// head returns the <head> element for a page.
 func head(title string) string {
 	return fmt.Sprintf(`<head>
   <meta charset="UTF-8">
@@ -11,6 +20,7 @@ func head(title string) string {
 </head>`, title)
 }
 
+// footer returns the shared site footer.
 func footer() string {
 	return `<footer class="site-footer">
   <p>FrejaID Demo</p>
@@ -18,6 +28,7 @@ func footer() string {
 }
 
 // Nav returns the site header for authenticated users.
+// The admin link is only included when role == "admin".
 func Nav(role string) string {
 	adminLink := ""
 	if role == "admin" {
@@ -40,7 +51,9 @@ func Nav(role string) string {
 </header>`, adminLink)
 }
 
-// PageStart returns the opening HTML for an authenticated page.
+// PageStart returns the opening HTML for a standard authenticated page.
+// extraHead is inserted before </head> and can be used for page-specific styles
+// or scripts; pass an empty string if not needed.
 func PageStart(title, role string, extraHead string) string {
 	h := head(title)
 	if extraHead != "" {
@@ -66,6 +79,7 @@ func PageEnd() string {
 }
 
 // AdminPageStart returns the opening HTML for an admin page.
+// Admin pages use a wider layout and include a breadcrumb navigation bar.
 func AdminPageStart(title string) string {
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">

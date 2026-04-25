@@ -1,3 +1,13 @@
+// Passkey management for authenticated users.
+//
+// After their initial passkey is registered (during sign-up) a user can:
+//   - Add more passkeys for other devices (e.g. phone + laptop + YubiKey).
+//   - Rename passkeys to tell them apart.
+//   - Delete passkeys they no longer use (not allowed if it's the only one).
+//
+// All routes in this file require authentication (wrapped with requireAuth in
+// handler.go).  The WebAuthn library (go-webauthn) handles the cryptographic
+// protocol; we just orchestrate the database reads and writes around it.
 package auth
 
 import (
@@ -14,13 +24,17 @@ import (
 	"github.com/paftech/frejaid/internal/middleware"
 )
 
+// passkeyRow holds the data for one row in the passkeys settings table.
 type passkeyRow struct {
-	ID          string
-	Name        string
-	CreatedAt   string
-	LastUsedAt  sql.NullString
+	ID         string
+	Name       string
+	CreatedAt  string
+	LastUsedAt sql.NullString
 }
 
+// showPasskeys renders the passkey management page at GET /settings/passkeys.
+// It lists all registered passkeys with add/rename/delete controls, plus
+// inline JavaScript that drives the WebAuthn credential creation ceremony.
 func (h *Handler) showPasskeys(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	role := middleware.GetUserRole(r)
@@ -64,6 +78,9 @@ func (h *Handler) showPasskeys(w http.ResponseWriter, r *http.Request) {
 			if t, err := time.Parse("2006-01-02 15:04:05", c.CreatedAt); err == nil {
 				createdFmt = t.Format("2 Jan 2006")
 			}
+
+			// Only show the delete button when there are multiple passkeys.
+			// Deleting the last passkey would lock the user out completely.
 			deleteBtn := ""
 			if len(creds) > 1 {
 				deleteBtn = fmt.Sprintf(
@@ -94,6 +111,10 @@ func (h *Handler) showPasskeys(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `</tbody></table>`)
 	}
 
+	// The "Add a new passkey" section runs the same WebAuthn registration
+	// ceremony as the initial sign-up, but for an already-authenticated user.
+	// The excludeCredentials list tells the authenticator to reject keys it
+	// has already registered for this account, avoiding duplicates.
 	fmt.Fprint(w, `
 <h3>Add a new passkey</h3>
 <p>Register a passkey on another device — phone, laptop, or security key.</p>
@@ -111,18 +132,22 @@ document.getElementById('addPasskeyBtn').addEventListener('click', async () => {
   msg.textContent = '';
   if (!name) { msg.textContent = 'Please enter a name first.'; return; }
 
+  // Step 1: get registration options from the server.
+  // The server passes excludeCredentials so the device won't register a key
+  // that is already stored for this user.
   const beginResp = await fetch('/settings/passkeys/add/begin', {method: 'POST'});
   if (!beginResp.ok) { msg.textContent = await beginResp.text(); return; }
 
   const options = await beginResp.json();
   options.publicKey.challenge = base64ToBuffer(options.publicKey.challenge);
-  options.publicKey.user.id = base64ToBuffer(options.publicKey.user.id);
+  options.publicKey.user.id   = base64ToBuffer(options.publicKey.user.id);
   if (options.publicKey.excludeCredentials) {
     options.publicKey.excludeCredentials = options.publicKey.excludeCredentials.map(c => ({
       ...c, id: base64ToBuffer(c.id)
     }));
   }
 
+  // Step 2: create a new passkey on this device.
   let credential;
   try {
     credential = await navigator.credentials.create(options);
@@ -131,16 +156,17 @@ document.getElementById('addPasskeyBtn').addEventListener('click', async () => {
     return;
   }
 
+  // Step 3: send the public key to the server, which stores it in the database.
   const finishResp = await fetch('/settings/passkeys/add/finish?name=' + encodeURIComponent(name), {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
-      id: credential.id,
-      rawId: bufferToBase64(credential.rawId),
-      type: credential.type,
+      id:     credential.id,
+      rawId:  bufferToBase64(credential.rawId),
+      type:   credential.type,
       response: {
         attestationObject: bufferToBase64(credential.response.attestationObject),
-        clientDataJSON: bufferToBase64(credential.response.clientDataJSON),
+        clientDataJSON:    bufferToBase64(credential.response.clientDataJSON),
       },
     }),
   });
@@ -164,6 +190,9 @@ function bufferToBase64(buf) {
 	fmt.Fprint(w, layout.PageEnd())
 }
 
+// beginAddPasskey starts a WebAuthn registration for an authenticated user.
+// It loads the user's existing credentials so they appear in excludeCredentials,
+// preventing the device from creating a duplicate key for the same account.
 func (h *Handler) beginAddPasskey(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	ctx := r.Context()
@@ -174,6 +203,8 @@ func (h *Handler) beginAddPasskey(w http.ResponseWriter, r *http.Request) {
 		userID,
 	).Scan(&displayName, &email)
 
+	// loadWAUser loads all existing credentials for this user.
+	// go-webauthn uses them to populate excludeCredentials in the response.
 	waUser, err := h.loadWAUser(ctx, userID, displayName, email)
 	if err != nil {
 		http.Error(w, "Server error", http.StatusInternalServerError)
@@ -186,6 +217,8 @@ func (h *Handler) beginAddPasskey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Persist the challenge state for 5 minutes.
+	// ON CONFLICT replaces any previous in-progress "add passkey" session.
 	sessionJSON, _ := json.Marshal(sessionData)
 	expiresAt := time.Now().UTC().Add(5 * time.Minute).Format("2006-01-02 15:04:05")
 	h.db.ExecContext(ctx,
@@ -199,6 +232,8 @@ func (h *Handler) beginAddPasskey(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(options)
 }
 
+// finishAddPasskey completes the WebAuthn registration for an authenticated user.
+// The name query parameter is the human-friendly label the user typed ("iPhone 15").
 func (h *Handler) finishAddPasskey(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	name := strings.TrimSpace(r.URL.Query().Get("name"))
@@ -207,6 +242,7 @@ func (h *Handler) finishAddPasskey(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
+	// Retrieve and delete the session atomically (RETURNING DELETE).
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
 	var sessionJSONStr string
 	err := h.db.QueryRowContext(ctx,
@@ -231,6 +267,8 @@ func (h *Handler) finishAddPasskey(w http.ResponseWriter, r *http.Request) {
 	).Scan(&displayName, &email)
 
 	waUser, _ := h.loadWAUser(ctx, userID, displayName, email)
+
+	// FinishRegistration verifies the attestation and returns the credential.
 	credential, err := h.webAuthn.FinishRegistration(waUser, sd, r)
 	if err != nil {
 		http.Error(w, "Passkey registration failed: "+err.Error(), http.StatusBadRequest)
@@ -255,6 +293,8 @@ func (h *Handler) finishAddPasskey(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// renamePasskey updates the human-friendly name of a passkey.
+// The WHERE clause includes user_id to prevent users from renaming others' keys.
 func (h *Handler) renamePasskey(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	credID := r.PathValue("id")
@@ -270,6 +310,8 @@ func (h *Handler) renamePasskey(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/settings/passkeys", http.StatusSeeOther)
 }
 
+// deletePasskey removes a passkey.  It refuses if it would leave the user with
+// no passkeys at all, which would lock them out of their account.
 func (h *Handler) deletePasskey(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	credID := r.PathValue("id")
@@ -293,6 +335,9 @@ func (h *Handler) deletePasskey(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/settings/passkeys", http.StatusSeeOther)
 }
 
+// htmlEscapeAttr escapes a string for safe use inside an HTML attribute value.
+// Necessary because passkey names come from the database and are rendered
+// inside input value="…" attributes.
 func htmlEscapeAttr(s string) string {
 	s = strings.ReplaceAll(s, "&", "&amp;")
 	s = strings.ReplaceAll(s, "<", "&lt;")
