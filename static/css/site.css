@@ -1,5 +1,5 @@
 /* ================================================================
-   French 75 Tracker — Site CSS
+   FrejaID Demo — Site CSS
    Structure: CSS custom properties → reset → layout → components
    To theme the site, change the :root variables only.
    ================================================================ */
@@ -116,10 +116,28 @@ a:hover         { text-decoration: underline; }
 .nav-bell          { font-size: 1rem; }
 .nav-bell--unread  { color: #f0c060; }
 
-/* Admin breadcrumb bar below the main header */
+/* ---------------------------------------------------------------
+   ADMIN HEADER OVERRIDE
+   Admin pages use .site-header.wide — given a high-contrast amber
+   colour scheme so it is immediately obvious you are in admin mode.
+--------------------------------------------------------------- */
+.site-header.wide {
+  background: #f0c000;
+  color: #111;
+  box-shadow: 0 2px 6px rgba(0,0,0,.25);
+}
+
+.site-header.wide .site-logo {
+  color: #111;
+}
+.site-header.wide .site-logo:hover {
+  color: #333;
+}
+
+/* Admin breadcrumb bar below the admin header */
 .admin-bar {
-  background: #100d09;
-  border-bottom: 1px solid #2e2620;
+  background: #e0b000;
+  border-bottom: 1px solid #c9a000;
 }
 .admin-bar__inner {
   max-width: var(--admin-width);
@@ -130,8 +148,8 @@ a:hover         { text-decoration: underline; }
   flex-wrap: wrap;
   font-size: 0.82rem;
 }
-.admin-bar a { color: #8a7e6e; text-decoration: none; }
-.admin-bar a:hover { color: var(--color-chrome-text); text-decoration: none; }
+.admin-bar a { color: #333; text-decoration: none; font-weight: 500; }
+.admin-bar a:hover { color: #000; text-decoration: underline; }
 
 /* ---------------------------------------------------------------
    MAIN CONTENT
