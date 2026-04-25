@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/paftech/frejaid/internal/auth"
+	"github.com/paftech/frejaid/internal/hooks"
 	"github.com/paftech/frejaid/internal/layout"
 	"github.com/paftech/frejaid/internal/mail"
 )
@@ -26,12 +27,13 @@ import (
 type Handler struct {
 	db      *sql.DB
 	mailer  *mail.Mailer
+	hooks   *hooks.Hooks
 	baseURL string // used when constructing links sent in approval emails
 }
 
 // NewHandler creates an admin Handler.
-func NewHandler(db *sql.DB, mailer *mail.Mailer, baseURL string) *Handler {
-	return &Handler{db: db, mailer: mailer, baseURL: baseURL}
+func NewHandler(db *sql.DB, mailer *mail.Mailer, h *hooks.Hooks, baseURL string) *Handler {
+	return &Handler{db: db, mailer: mailer, hooks: h, baseURL: baseURL}
 }
 
 // RegisterRoutes wires all admin routes into mux.
@@ -115,7 +117,7 @@ func (h *Handler) listRegistrations(w http.ResponseWriter, r *http.Request) {
 // passkey and Freja eID registrations.
 func (h *Handler) approveRegistration(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := auth.SendApprovalEmail(r.Context(), h.db, h.mailer, h.baseURL, id); err != nil {
+	if _, err := auth.SendApprovalEmail(r.Context(), h.db, h.mailer, h.hooks, h.baseURL, id); err != nil {
 		http.Error(w, "Could not approve: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -174,12 +176,16 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) banUser(w http.ResponseWriter, r *http.Request) {
-	SetUserBan(r.Context(), h.db, r.PathValue("id"), true)
+	id := r.PathValue("id")
+	SetUserBan(r.Context(), h.db, id, true)
+	h.hooks.CallOnUserBanned(r.Context(), id)
 	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
 }
 
 func (h *Handler) unbanUser(w http.ResponseWriter, r *http.Request) {
-	SetUserBan(r.Context(), h.db, r.PathValue("id"), false)
+	id := r.PathValue("id")
+	SetUserBan(r.Context(), h.db, id, false)
+	h.hooks.CallOnUserUnbanned(r.Context(), id)
 	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
 }
 
@@ -191,7 +197,9 @@ func (h *Handler) setRole(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid role", http.StatusBadRequest)
 		return
 	}
-	SetUserRole(r.Context(), h.db, r.PathValue("id"), role)
+	id := r.PathValue("id")
+	SetUserRole(r.Context(), h.db, id, role)
+	h.hooks.CallOnRoleChanged(r.Context(), id, role)
 	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
 }
 

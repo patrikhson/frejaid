@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/paftech/frejaid/internal/hooks"
 	"github.com/paftech/frejaid/internal/layout"
 	"github.com/paftech/frejaid/internal/mail"
 	"github.com/paftech/frejaid/internal/middleware"
@@ -20,12 +21,13 @@ import (
 type Handler struct {
 	db      *sql.DB
 	mailer  *mail.Mailer
+	hooks   *hooks.Hooks
 	baseURL string
 	isProd  bool
 }
 
-func NewHandler(db *sql.DB, mailer *mail.Mailer, baseURL string, isProd bool) *Handler {
-	return &Handler{db: db, mailer: mailer, baseURL: baseURL, isProd: isProd}
+func NewHandler(db *sql.DB, mailer *mail.Mailer, h *hooks.Hooks, baseURL string, isProd bool) *Handler {
+	return &Handler{db: db, mailer: mailer, hooks: h, baseURL: baseURL, isProd: isProd}
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux, requireAuth func(http.Handler) http.Handler) {
@@ -274,6 +276,8 @@ func (h *Handler) confirmEmailChange(w http.ResponseWriter, r *http.Request) {
 		`UPDATE user_identities SET provider_email=? WHERE user_id=? AND provider='freja'`,
 		newEmail, userID,
 	)
+
+	h.hooks.CallOnEmailChanged(ctx, userID, "", newEmail)
 
 	w.Header().Set("Content-Type", "text/html")
 	fmt.Fprintf(w, `<!DOCTYPE html>

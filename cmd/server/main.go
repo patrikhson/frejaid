@@ -48,6 +48,7 @@ import (
 	"github.com/paftech/frejaid/internal/config"
 	"github.com/paftech/frejaid/internal/db"
 	"github.com/paftech/frejaid/internal/home"
+	"github.com/paftech/frejaid/internal/hooks"
 	"github.com/paftech/frejaid/internal/mail"
 	"github.com/paftech/frejaid/internal/middleware"
 	"github.com/paftech/frejaid/internal/user"
@@ -93,9 +94,28 @@ func main() {
 
 	mailer := mail.New(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom)
 
+	// ── Integration hooks ─────────────────────────────────────────────────────
+	// Populate these to connect FrejaID events to your application logic.
+	// Any field left nil is silently skipped.  See internal/hooks/hooks.go for
+	// the full list and documentation of each hook.
+	appHooks := &hooks.Hooks{
+		// OnUserCreated: func(ctx context.Context, u hooks.User) {
+		//     // Create the user's record in your own database.
+		//     mydb.CreateUser(ctx, u.ID, u.Email, u.DisplayName)
+		// },
+		// OnLogin: func(ctx context.Context, userID string, method hooks.LoginMethod) {
+		//     // Write an audit log entry.
+		//     audit.Log(ctx, userID, "login", string(method))
+		// },
+		// OnEmailChanged: func(ctx context.Context, userID, oldEmail, newEmail string) {
+		//     // Update the email reference in your own database.
+		//     mydb.UpdateEmail(ctx, userID, newEmail)
+		// },
+	}
+
 	// auth.Handler owns the core authentication flows: registration, login,
 	// passkey management, Freja linking, and credential reset.
-	authHandler := auth.NewHandler(database, wa, mailer, cfg.AppBaseURL, cfg.SessionSecret, cfg.IsProd, cfg.AdminEmails)
+	authHandler := auth.NewHandler(database, wa, mailer, appHooks, cfg.AppBaseURL, cfg.SessionSecret, cfg.IsProd, cfg.AdminEmails)
 
 	// Periodically delete expired sessions so the sessions table stays small.
 	go func() {
@@ -121,8 +141,8 @@ func main() {
 	requireAdmin := auth.RequireRole(database, "admin")
 
 	authHandler.RegisterRoutes(mux, requireAuth)
-	user.NewHandler(database, mailer, cfg.AppBaseURL, cfg.IsProd).RegisterRoutes(mux, requireAuth)
-	admin.NewHandler(database, mailer, cfg.AppBaseURL).RegisterRoutes(mux, requireAdmin)
+	user.NewHandler(database, mailer, appHooks, cfg.AppBaseURL, cfg.IsProd).RegisterRoutes(mux, requireAuth)
+	admin.NewHandler(database, mailer, appHooks, cfg.AppBaseURL).RegisterRoutes(mux, requireAdmin)
 	home.NewHandler(database).RegisterRoutes(mux, requireAuth)
 
 	// Serve static assets (CSS, JS, images) from the embedded filesystem.

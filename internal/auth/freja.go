@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/paftech/frejaid/internal/hooks"
 	"github.com/paftech/frejaid/internal/middleware"
 )
 
@@ -187,6 +188,7 @@ func (h *Handler) frejaLogin(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Session error", http.StatusInternalServerError)
 			return
 		}
+		h.hooks.CallOnLogin(ctx, userID, hooks.LoginFreja)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
@@ -304,6 +306,8 @@ func (h *Handler) frejaLinkConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.hooks.CallOnFrejaLinked(ctx, userID, email, sub)
+
 	http.Redirect(w, r, "/settings/account?linked=freja", http.StatusSeeOther)
 }
 
@@ -329,6 +333,7 @@ func (h *Handler) frejaUnlink(w http.ResponseWriter, r *http.Request) {
 	h.db.ExecContext(ctx,
 		`DELETE FROM user_identities WHERE user_id = ? AND provider = 'freja'`, userID,
 	)
+	h.hooks.CallOnFrejaUnlinked(ctx, userID)
 	http.Redirect(w, r, "/settings/account?unlinked=freja", http.StatusSeeOther)
 }
 

@@ -37,6 +37,7 @@ import (
 
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
+	"github.com/paftech/frejaid/internal/hooks"
 	"github.com/paftech/frejaid/internal/mail"
 )
 
@@ -45,17 +46,19 @@ type Handler struct {
 	db          *sql.DB
 	webAuthn    *webauthn.WebAuthn // go-webauthn relying party
 	mailer      *mail.Mailer
-	baseURL     string   // used when constructing links in emails
-	isProd      bool     // controls cookie Secure flag
-	sessionKey  string   // session secret (reserved for future signing)
-	adminEmails []string // emails that are auto-approved as admin on first signup
+	hooks       *hooks.Hooks // integration points for the host application
+	baseURL     string       // used when constructing links in emails
+	isProd      bool         // controls cookie Secure flag
+	sessionKey  string       // session secret (reserved for future signing)
+	adminEmails []string     // emails that are auto-approved as admin on first signup
 }
 
-func NewHandler(db *sql.DB, wa *webauthn.WebAuthn, mailer *mail.Mailer, baseURL, sessionKey string, isProd bool, adminEmails []string) *Handler {
+func NewHandler(db *sql.DB, wa *webauthn.WebAuthn, mailer *mail.Mailer, h *hooks.Hooks, baseURL, sessionKey string, isProd bool, adminEmails []string) *Handler {
 	return &Handler{
 		db:          db,
 		webAuthn:    wa,
 		mailer:      mailer,
+		hooks:       h,
 		baseURL:     baseURL,
 		isProd:      isProd,
 		sessionKey:  sessionKey,
@@ -88,7 +91,7 @@ func (h *Handler) maybeAutoApprove(ctx context.Context, requestID, email string)
 	if !h.isAdminEmail(email) {
 		return "", false
 	}
-	userID, err := SendApprovalEmail(ctx, h.db, h.mailer, h.baseURL, requestID)
+	userID, err := SendApprovalEmail(ctx, h.db, h.mailer, h.hooks, h.baseURL, requestID)
 	if err != nil {
 		return "", false
 	}
@@ -154,6 +157,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, requireAuth func(http.Handl
 
 	// ── Freja unlink (authenticated) ─────────────────────────────────────────
 	mux.Handle("POST /settings/freja/unlink", requireAuth(http.HandlerFunc(h.frejaUnlink)))
+
+	// ── Session check for Apache mod_auth_request (Scenario 1A) ─────────────
+	// Returns 200 + X-FrejaID-* headers if the session is valid, 401 otherwise.
+	// Apache calls this before every request to the existing app.
+	mux.HandleFunc("GET /auth/check", h.checkAuth)
 
 	// ── Credential reset (unauthenticated — for users locked out) ────────────
 	mux.HandleFunc("POST /auth/request-credential-reset", h.requestCredentialReset)
@@ -496,7 +504,7 @@ type storedCredential struct {
 // an email telling them they can now log in.
 //
 // Returns the new user ID so the caller can do additional work (e.g. set role).
-func SendApprovalEmail(ctx context.Context, db *sql.DB, mailer *mail.Mailer, baseURL, requestID string) (string, error) {
+func SendApprovalEmail(ctx context.Context, db *sql.DB, mailer *mail.Mailer, h *hooks.Hooks, baseURL, requestID string) (string, error) {
 	var name, email, pendingUserID, provider string
 	var frejaSub sql.NullString
 	var credJSON sql.NullString
@@ -509,10 +517,26 @@ func SendApprovalEmail(ctx context.Context, db *sql.DB, mailer *mail.Mailer, bas
 		return "", fmt.Errorf("registration not found: %w", err)
 	}
 
+	var userID string
+	var approvalErr error
 	if provider == "freja" {
-		return sendApprovalFreja(ctx, db, mailer, baseURL, requestID, pendingUserID, name, email, frejaSub)
+		userID, approvalErr = sendApprovalFreja(ctx, db, mailer, baseURL, requestID, pendingUserID, name, email, frejaSub)
+	} else {
+		userID, approvalErr = sendApprovalPasskey(ctx, db, mailer, baseURL, requestID, pendingUserID, name, email, credJSON)
 	}
-	return sendApprovalPasskey(ctx, db, mailer, baseURL, requestID, pendingUserID, name, email, credJSON)
+	if approvalErr != nil {
+		return "", approvalErr
+	}
+
+	h.CallOnUserCreated(ctx, hooks.User{
+		ID:          userID,
+		Email:       email,
+		DisplayName: name,
+		Role:        "passive", // admin elevation happens after this if needed
+		Provider:    hooks.LoginMethod(provider),
+	})
+
+	return userID, nil
 }
 
 // sendApprovalPasskey creates the user + passkey credential and sends the
@@ -716,13 +740,23 @@ func (h *Handler) finishLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.hooks.CallOnLogin(ctx, userID, hooks.LoginPasskey)
+
 	// The browser's JS reads the redirect URL from the JSON response.
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"redirect": "/"})
 }
 
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	// Retrieve the user ID before deleting the session so we can pass it to
+	// the hook (the session row is gone after DeleteSession returns).
+	s, _ := GetSession(r.Context(), h.db, r)
 	DeleteSession(r.Context(), h.db, w, r)
+
+	if s != nil {
+		h.hooks.CallOnLogout(r.Context(), s.UserID)
+	}
+
 	http.Redirect(w, r, "/auth/login", http.StatusSeeOther)
 }
 
