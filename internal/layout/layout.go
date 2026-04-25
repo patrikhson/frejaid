@@ -39,8 +39,6 @@ func Nav(role string) string {
     <a href="/" class="site-logo">FrejaID Demo</a>
     <nav class="site-nav">
       <a href="/settings/account">Account</a>
-      <span class="nav-sep">·</span>
-      <a href="/settings/passkeys">Passkeys</a>
       %s
       <span class="nav-sep">·</span>
       <form method="POST" action="/auth/logout" style="display:inline">
