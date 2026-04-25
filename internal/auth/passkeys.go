@@ -14,6 +14,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"strings"
 	"time"
@@ -59,7 +60,8 @@ func (h *Handler) showPasskeys(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, layout.PageStart("Passkeys", role, ""))
+	csrfToken := middleware.GetCSRFToken(r)
+	fmt.Fprint(w, layout.PageStart("Passkeys", role, csrfToken))
 	fmt.Fprint(w, `<h2>Passkeys</h2>`)
 	fmt.Fprint(w, `<p><a href="/settings/account">← Account settings</a></p>`)
 
@@ -102,7 +104,7 @@ func (h *Handler) showPasskeys(w http.ResponseWriter, r *http.Request) {
 				   <td>%s</td>
 				   <td>%s</td>
 				 </tr>`,
-				c.ID, htmlEscapeAttr(c.Name),
+				c.ID, html.EscapeString(c.Name),
 				createdFmt,
 				lastUsed,
 				deleteBtn,
@@ -126,6 +128,7 @@ func (h *Handler) showPasskeys(w http.ResponseWriter, r *http.Request) {
   <p id="addPasskeyMsg" style="color:var(--color-error,red)"></p>
 </div>
 <script>
+const csrfToken = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
 document.getElementById('addPasskeyBtn').addEventListener('click', async () => {
   const name = document.getElementById('newPasskeyName').value.trim();
   const msg = document.getElementById('addPasskeyMsg');
@@ -135,7 +138,10 @@ document.getElementById('addPasskeyBtn').addEventListener('click', async () => {
   // Step 1: get registration options from the server.
   // The server passes excludeCredentials so the device won't register a key
   // that is already stored for this user.
-  const beginResp = await fetch('/settings/passkeys/add/begin', {method: 'POST'});
+  const beginResp = await fetch('/settings/passkeys/add/begin', {
+    method: 'POST',
+    headers: {'X-CSRF-Token': csrfToken},
+  });
   if (!beginResp.ok) { msg.textContent = await beginResp.text(); return; }
 
   const options = await beginResp.json();
@@ -159,7 +165,7 @@ document.getElementById('addPasskeyBtn').addEventListener('click', async () => {
   // Step 3: send the public key to the server, which stores it in the database.
   const finishResp = await fetch('/settings/passkeys/add/finish?name=' + encodeURIComponent(name), {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken},
     body: JSON.stringify({
       id:     credential.id,
       rawId:  bufferToBase64(credential.rawId),
@@ -194,6 +200,9 @@ function bufferToBase64(buf) {
 // It loads the user's existing credentials so they appear in excludeCredentials,
 // preventing the device from creating a duplicate key for the same account.
 func (h *Handler) beginAddPasskey(w http.ResponseWriter, r *http.Request) {
+	if !ValidateCSRF(w, r) {
+		return
+	}
 	userID := middleware.GetUserID(r)
 	ctx := r.Context()
 
@@ -235,6 +244,9 @@ func (h *Handler) beginAddPasskey(w http.ResponseWriter, r *http.Request) {
 // finishAddPasskey completes the WebAuthn registration for an authenticated user.
 // The name query parameter is the human-friendly label the user typed ("iPhone 15").
 func (h *Handler) finishAddPasskey(w http.ResponseWriter, r *http.Request) {
+	if !ValidateCSRF(w, r) {
+		return
+	}
 	userID := middleware.GetUserID(r)
 	name := strings.TrimSpace(r.URL.Query().Get("name"))
 	if name == "" {
@@ -296,6 +308,9 @@ func (h *Handler) finishAddPasskey(w http.ResponseWriter, r *http.Request) {
 // renamePasskey updates the human-friendly name of a passkey.
 // The WHERE clause includes user_id to prevent users from renaming others' keys.
 func (h *Handler) renamePasskey(w http.ResponseWriter, r *http.Request) {
+	if !ValidateCSRF(w, r) {
+		return
+	}
 	userID := middleware.GetUserID(r)
 	credID := r.PathValue("id")
 	name := strings.TrimSpace(r.FormValue("name"))
@@ -313,6 +328,9 @@ func (h *Handler) renamePasskey(w http.ResponseWriter, r *http.Request) {
 // deletePasskey removes a passkey.  It refuses if it would leave the user with
 // no passkeys at all, which would lock them out of their account.
 func (h *Handler) deletePasskey(w http.ResponseWriter, r *http.Request) {
+	if !ValidateCSRF(w, r) {
+		return
+	}
 	userID := middleware.GetUserID(r)
 	credID := r.PathValue("id")
 	ctx := r.Context()
@@ -335,13 +353,3 @@ func (h *Handler) deletePasskey(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/settings/passkeys", http.StatusSeeOther)
 }
 
-// htmlEscapeAttr escapes a string for safe use inside an HTML attribute value.
-// Necessary because passkey names come from the database and are rendered
-// inside input value="…" attributes.
-func htmlEscapeAttr(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	s = strings.ReplaceAll(s, `"`, "&#34;")
-	return s
-}

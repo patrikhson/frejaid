@@ -9,6 +9,7 @@ package home
 import (
 	"database/sql"
 	"fmt"
+	"html"
 	"net/http"
 
 	"github.com/paftech/frejaid/internal/layout"
@@ -40,10 +41,10 @@ func (h *Handler) home(w http.ResponseWriter, r *http.Request) {
 	).Scan(&email, &displayName)
 
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, layout.PageStart("Home", role, ""))
+	fmt.Fprint(w, layout.PageStart("Home", role, middleware.GetCSRFToken(r)))
 
-	fmt.Fprintf(w, `<h2>Hello, %s</h2>`, displayName)
-	fmt.Fprintf(w, `<p>Authenticated as <strong>%s</strong> &middot; role: <strong>%s</strong></p>`, email, role)
+	fmt.Fprintf(w, `<h2>Hello, %s</h2>`, html.EscapeString(displayName))
+	fmt.Fprintf(w, `<p>Authenticated as <strong>%s</strong> &middot; role: <strong>%s</strong></p>`, html.EscapeString(email), html.EscapeString(role))
 	fmt.Fprint(w, `<p style="color:var(--color-text-muted)">This is a placeholder. Replace this page with your own application content.</p>`)
 
 	if role == "admin" {

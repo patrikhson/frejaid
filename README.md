@@ -473,6 +473,23 @@ See [`internal/db/migrations/`](internal/db/migrations/) for the full annotated 
 
 ---
 
+## Known limitations
+
+### HTML templating
+
+Page HTML is currently built with `fmt.Fprintf` rather than Go's `html/template`
+package.  User-controlled values (names, email addresses) are escaped with
+`html.EscapeString` before rendering, which prevents XSS in practice, but the
+correct long-term approach is to switch to `html/template` which auto-escapes
+by design and makes it impossible to forget.
+
+Migrating to `html/template` would require moving the inline HTML strings out of
+the Go source files and into `.html` template files, then embedding them.  This
+is straightforward but involves touching every page — it is left as future work
+for anyone building on this codebase in production.
+
+---
+
 ## Project layout
 
 ```

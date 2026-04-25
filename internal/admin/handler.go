@@ -17,10 +17,13 @@ import (
 	"net/http"
 	"time"
 
+	"html"
+
 	"github.com/paftech/frejaid/internal/auth"
 	"github.com/paftech/frejaid/internal/hooks"
 	"github.com/paftech/frejaid/internal/layout"
 	"github.com/paftech/frejaid/internal/mail"
+	"github.com/paftech/frejaid/internal/middleware"
 )
 
 // Handler holds shared dependencies for admin HTTP handlers.
@@ -63,7 +66,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, requireAdmin func(http.Hand
 func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
 	c := GetCounts(r.Context(), h.db)
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, layout.AdminPageStart("Admin Dashboard"))
+	fmt.Fprint(w, layout.AdminPageStart("Admin Dashboard", middleware.GetCSRFToken(r)))
 	fmt.Fprintf(w, `<ul>
   <li><a href="/admin/registrations">Registrations</a> — %d pending</li>
   <li><a href="/admin/credential-resets">Credential resets</a> — %d pending</li>
@@ -86,7 +89,7 @@ func (h *Handler) listRegistrations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, layout.AdminPageStart("Pending Registrations"))
+	fmt.Fprint(w, layout.AdminPageStart("Pending Registrations", middleware.GetCSRFToken(r)))
 	fmt.Fprint(w, `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Method</th><th>Requested</th><th></th></tr></thead><tbody>`)
 	for _, rq := range reqs {
 		providerLabel := "Passkey"
@@ -103,7 +106,7 @@ func (h *Handler) listRegistrations(w http.ResponseWriter, r *http.Request) {
       <button>Reject</button>
     </form>
   </td>
-</tr>`, rq.Name, rq.Email, providerLabel, rq.CreatedAt.Format("2 Jan 2006"), rq.ID, rq.ID)
+</tr>`, html.EscapeString(rq.Name), html.EscapeString(rq.Email), providerLabel, rq.CreatedAt.Format("2 Jan 2006"), rq.ID, rq.ID)
 	}
 	if len(reqs) == 0 {
 		fmt.Fprint(w, `<tr><td colspan="5">No pending registrations.</td></tr>`)
@@ -116,6 +119,9 @@ func (h *Handler) listRegistrations(w http.ResponseWriter, r *http.Request) {
 // The actual work happens in auth.SendApprovalEmail, which handles both
 // passkey and Freja eID registrations.
 func (h *Handler) approveRegistration(w http.ResponseWriter, r *http.Request) {
+	if !auth.ValidateCSRF(w, r) {
+		return
+	}
 	id := r.PathValue("id")
 	if _, err := auth.SendApprovalEmail(r.Context(), h.db, h.mailer, h.hooks, h.baseURL, id); err != nil {
 		http.Error(w, "Could not approve: "+err.Error(), http.StatusInternalServerError)
@@ -125,6 +131,9 @@ func (h *Handler) approveRegistration(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) rejectRegistration(w http.ResponseWriter, r *http.Request) {
+	if !auth.ValidateCSRF(w, r) {
+		return
+	}
 	id := r.PathValue("id")
 	if err := RejectRegistration(r.Context(), h.db, id); err != nil {
 		http.Error(w, "Server error", http.StatusInternalServerError)
@@ -142,7 +151,7 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, layout.AdminPageStart("Users"))
+	fmt.Fprint(w, layout.AdminPageStart("Users", middleware.GetCSRFToken(r)))
 	fmt.Fprint(w, `<div class="table-wrap"><table><thead><tr><th>Email</th><th>Display name</th><th>Role</th><th>Banned</th><th>Joined</th><th></th></tr></thead><tbody>`)
 	for _, u := range users {
 		banned := "No"
@@ -167,7 +176,7 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
     </form>
   </td>
 </tr>`,
-			u.Username, u.DisplayName, u.Role, banned, u.CreatedAt.Format("2 Jan 2006"),
+			html.EscapeString(u.Username), html.EscapeString(u.DisplayName), u.Role, banned, u.CreatedAt.Format("2 Jan 2006"),
 			banAction, u.ID,
 		)
 	}
@@ -176,6 +185,9 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) banUser(w http.ResponseWriter, r *http.Request) {
+	if !auth.ValidateCSRF(w, r) {
+		return
+	}
 	id := r.PathValue("id")
 	SetUserBan(r.Context(), h.db, id, true)
 	h.hooks.CallOnUserBanned(r.Context(), id)
@@ -183,6 +195,9 @@ func (h *Handler) banUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) unbanUser(w http.ResponseWriter, r *http.Request) {
+	if !auth.ValidateCSRF(w, r) {
+		return
+	}
 	id := r.PathValue("id")
 	SetUserBan(r.Context(), h.db, id, false)
 	h.hooks.CallOnUserUnbanned(r.Context(), id)
@@ -192,6 +207,9 @@ func (h *Handler) unbanUser(w http.ResponseWriter, r *http.Request) {
 // setRole validates the new role value before applying it, preventing
 // arbitrary values from reaching the database.
 func (h *Handler) setRole(w http.ResponseWriter, r *http.Request) {
+	if !auth.ValidateCSRF(w, r) {
+		return
+	}
 	role := r.FormValue("role")
 	if role != "passive" && role != "active" && role != "admin" {
 		http.Error(w, "Invalid role", http.StatusBadRequest)
@@ -212,7 +230,7 @@ func (h *Handler) listCredentialResets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, layout.AdminPageStart("Pending Credential Resets"))
+	fmt.Fprint(w, layout.AdminPageStart("Pending Credential Resets", middleware.GetCSRFToken(r)))
 	fmt.Fprint(w, `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Method</th><th>Requested</th><th></th></tr></thead><tbody>`)
 	for _, rq := range reqs {
 		providerLabel := "Passkey"
@@ -229,7 +247,7 @@ func (h *Handler) listCredentialResets(w http.ResponseWriter, r *http.Request) {
       <button>Reject</button>
     </form>
   </td>
-</tr>`, rq.UserName, rq.UserEmail, providerLabel, rq.CreatedAt.Format("2 Jan 2006"), rq.ID, rq.ID)
+</tr>`, html.EscapeString(rq.UserName), html.EscapeString(rq.UserEmail), providerLabel, rq.CreatedAt.Format("2 Jan 2006"), rq.ID, rq.ID)
 	}
 	if len(reqs) == 0 {
 		fmt.Fprint(w, `<tr><td colspan="5">No pending credential resets.</td></tr>`)
@@ -242,6 +260,9 @@ func (h *Handler) listCredentialResets(w http.ResponseWriter, r *http.Request) {
 // The token is valid for 48 hours and links to either the passkey reset flow
 // or the Freja reset flow (which is Apache-protected).
 func (h *Handler) approveCredentialReset(w http.ResponseWriter, r *http.Request) {
+	if !auth.ValidateCSRF(w, r) {
+		return
+	}
 	id := r.PathValue("id")
 	ctx := r.Context()
 
@@ -285,6 +306,9 @@ func (h *Handler) approveCredentialReset(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) rejectCredentialReset(w http.ResponseWriter, r *http.Request) {
+	if !auth.ValidateCSRF(w, r) {
+		return
+	}
 	RejectCredentialReset(r.Context(), h.db, r.PathValue("id"))
 	http.Redirect(w, r, "/admin/credential-resets", http.StatusSeeOther)
 }

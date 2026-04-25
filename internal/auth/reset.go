@@ -30,6 +30,7 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"strings"
 	"time"
@@ -295,7 +296,7 @@ func (h *Handler) resetFreja(w http.ResponseWriter, r *http.Request) {
 	// from using another person's reset link with their own Freja identity.
 	if !strings.EqualFold(frejaEm, userEmail) {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprintf(w, frejaEmailMismatchHTML, frejaEm, userEmail)
+		fmt.Fprintf(w, frejaEmailMismatchHTML, html.EscapeString(frejaEm), html.EscapeString(userEmail))
 		return
 	}
 

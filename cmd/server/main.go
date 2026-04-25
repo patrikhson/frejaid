@@ -137,8 +137,8 @@ func main() {
 	// Register route groups.
 	// requireAuth and requireAdmin are middleware functions that redirect or
 	// reject unauthenticated / unauthorised requests respectively.
-	requireAuth := auth.RequireAuth(database)
-	requireAdmin := auth.RequireRole(database, "admin")
+	requireAuth := auth.RequireAuth(database, cfg.SessionSecret)
+	requireAdmin := auth.RequireRole(database, cfg.SessionSecret, "admin")
 
 	authHandler.RegisterRoutes(mux, requireAuth)
 	user.NewHandler(database, mailer, appHooks, cfg.AppBaseURL, cfg.IsProd).RegisterRoutes(mux, requireAuth)
@@ -159,7 +159,7 @@ func main() {
 	handler := middleware.Logging(middleware.SecurityHeaders(mux))
 
 	srv := &http.Server{
-		Addr:              ":" + cfg.Port,
+		Addr:              cfg.BindAddr + ":" + cfg.Port,
 		Handler:           handler,
 		ReadHeaderTimeout: 15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -167,7 +167,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("listening on :%s (env=%s)", cfg.Port, cfg.AppEnv)
+		log.Printf("listening on %s:%s (env=%s)", cfg.BindAddr, cfg.Port, cfg.AppEnv)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server: %v", err)
 		}

@@ -15,6 +15,12 @@ type Config struct {
 	// In production, SESSION_SECRET is required and cookies are Secure.
 	AppEnv string
 
+	// BindAddr is the IP address the server binds to (default: 127.0.0.1).
+	// Keep this at 127.0.0.1 in production — Apache is the only process that
+	// should reach the Go app directly.  Binding to 0.0.0.0 exposes the Freja
+	// header trust model to anyone who can reach the port.
+	BindAddr string
+
 	// Port is the TCP port the HTTP server listens on (default: 8091).
 	// In production the app sits behind Apache which handles TLS termination.
 	Port string
@@ -71,6 +77,7 @@ type Config struct {
 func Load() (*Config, error) {
 	c := &Config{
 		AppEnv:                getEnv("APP_ENV", "development"),
+		BindAddr:              getEnv("BIND_ADDR", "127.0.0.1"),
 		Port:                  getEnv("PORT", "8091"),
 		DatabasePath:          getEnv("DATABASE_PATH", "./frejaid.db"),
 		SessionSecret:         getEnv("SESSION_SECRET", ""),

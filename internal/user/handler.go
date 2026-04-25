@@ -7,10 +7,12 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"html"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/paftech/frejaid/internal/auth"
 	"github.com/paftech/frejaid/internal/hooks"
 	"github.com/paftech/frejaid/internal/layout"
 	"github.com/paftech/frejaid/internal/mail"
@@ -44,6 +46,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, requireAuth func(http.Handl
 func (h *Handler) editProfile(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	role := middleware.GetUserRole(r)
+	csrfToken := middleware.GetCSRFToken(r)
 
 	var displayName string
 	h.db.QueryRowContext(r.Context(),
@@ -51,7 +54,7 @@ func (h *Handler) editProfile(w http.ResponseWriter, r *http.Request) {
 	).Scan(&displayName)
 
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, layout.PageStart("Edit Profile", role, ""))
+	fmt.Fprint(w, layout.PageStart("Edit Profile", role, csrfToken))
 	fmt.Fprintf(w, `<h2>Edit Profile</h2>
 <form class="form" method="POST" action="/settings/profile">
   <label>Display name
@@ -61,7 +64,7 @@ func (h *Handler) editProfile(w http.ResponseWriter, r *http.Request) {
     <button type="submit" class="btn">Save</button>
     <a href="/settings/account">Cancel</a>
   </div>
-</form>`, displayName)
+</form>`, html.EscapeString(displayName))
 	fmt.Fprint(w, layout.PageEnd())
 }
 
@@ -69,6 +72,9 @@ func (h *Handler) editProfile(w http.ResponseWriter, r *http.Request) {
 // An empty display_name clears the field (stored as NULL), which causes the
 // username (email) to be shown instead in all COALESCE(display_name, username) queries.
 func (h *Handler) saveProfile(w http.ResponseWriter, r *http.Request) {
+	if !auth.ValidateCSRF(w, r) {
+		return
+	}
 	userID := middleware.GetUserID(r)
 
 	if err := r.ParseForm(); err != nil {
@@ -107,6 +113,7 @@ func (h *Handler) saveProfile(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) showAccount(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	role := middleware.GetUserRole(r)
+	csrfToken := middleware.GetCSRFToken(r)
 	ctx := r.Context()
 
 	var email, displayName string
@@ -133,7 +140,7 @@ func (h *Handler) showAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, layout.PageStart("Account Settings", role, ""))
+	fmt.Fprint(w, layout.PageStart("Account Settings", role, csrfToken))
 	fmt.Fprint(w, `<h2>Account Settings</h2>`)
 
 	if flash == "freja" {
@@ -145,6 +152,7 @@ func (h *Handler) showAccount(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `<tr><td>Passkey</td><td>%d registered</td><td><a href="/settings/passkeys">Manage</a></td></tr>`, passkeyCount)
 
 	if frejaEmail != "" {
+		frejaEmail = html.EscapeString(frejaEmail)
 		// Show an Unlink button only if the user has a passkey to fall back to.
 		// Without a passkey they would be locked out after unlinking Freja.
 		frejaUnlinkBtn := ""
@@ -162,7 +170,7 @@ func (h *Handler) showAccount(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `<section><h3>Display name</h3>
 <p>Current: <strong>%s</strong></p>
 <p><a href="/settings/profile">Edit display name</a></p>
-</section>`, displayName)
+</section>`, html.EscapeString(displayName))
 
 	fmt.Fprintf(w, `<section><h3>Email address</h3>
 <p>Current: <strong>%s</strong></p>
@@ -173,7 +181,7 @@ func (h *Handler) showAccount(w http.ResponseWriter, r *http.Request) {
   <p><small>A verification link will be sent to your new address.</small></p>
   <button type="submit" class="btn">Change email</button>
 </form>
-</section>`, email)
+</section>`, html.EscapeString(email))
 
 	fmt.Fprint(w, layout.PageEnd())
 }
@@ -183,6 +191,9 @@ func (h *Handler) showAccount(w http.ResponseWriter, r *http.Request) {
 // This proves the user controls the new address and prevents the old address
 // holder from being notified of changes they did not request.
 func (h *Handler) requestEmailChange(w http.ResponseWriter, r *http.Request) {
+	if !auth.ValidateCSRF(w, r) {
+		return
+	}
 	userID := middleware.GetUserID(r)
 	ctx := r.Context()
 
@@ -229,12 +240,13 @@ func (h *Handler) requestEmailChange(w http.ResponseWriter, r *http.Request) {
 	}
 
 	role := middleware.GetUserRole(r)
+	csrfToken2 := middleware.GetCSRFToken(r)
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, layout.PageStart("Email change requested", role, ""))
+	fmt.Fprint(w, layout.PageStart("Email change requested", role, csrfToken2))
 	fmt.Fprintf(w, `<h2>Check your email</h2>
 <p>A verification link has been sent to <strong>%s</strong>.</p>
 <p>Click the link in that email to confirm the change. It expires in 24 hours.</p>
-<p><a href="/settings/account">Back to account settings</a></p>`, newEmail)
+<p><a href="/settings/account">Back to account settings</a></p>`, html.EscapeString(newEmail))
 	fmt.Fprint(w, layout.PageEnd())
 }
 
@@ -293,5 +305,5 @@ func (h *Handler) confirmEmailChange(w http.ResponseWriter, r *http.Request) {
   <p><a href="/settings/account">Back to account settings</a></p>
 </main>
 <footer class="site-footer"><p>FrejaID Demo</p></footer>
-</body></html>`, newEmail)
+</body></html>`, html.EscapeString(newEmail))
 }

@@ -1,34 +1,45 @@
 // Package layout provides reusable HTML page wrappers for authenticated pages.
-//
-// There are two layout families:
-//   - PageStart / PageEnd      — standard authenticated page with site nav
-//   - AdminPageStart / AdminPageEnd — wide admin layout with breadcrumb bar
-//
-// All pages link the shared site.css stylesheet built by Tailwind CSS.
-// Public (unauthenticated) pages use the publicPage() helper in auth/handler.go.
 package layout
 
 import "fmt"
 
-// head returns the <head> element for a page.
-func head(title string) string {
+func head(title, csrfToken string) string {
 	return fmt.Sprintf(`<head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="csrf-token" content="%s">
   <title>%s — FrejaID Demo</title>
   <link rel="stylesheet" href="/static/css/site.css">
-</head>`, title)
+</head>`, csrfToken, title)
 }
 
-// footer returns the shared site footer.
 func footer() string {
 	return `<footer class="site-footer">
   <p>FrejaID Demo</p>
 </footer>`
 }
 
+// csrfScript auto-injects the CSRF token (from the meta tag) into every
+// POST form on the page as a hidden field.  This means individual form
+// templates do not need to include the token explicitly.
+// JS fetch calls on authenticated pages should read the token from the meta
+// tag and send it as the X-CSRF-Token request header.
+const csrfScript = `<script>
+(function() {
+  var m = document.querySelector('meta[name="csrf-token"]');
+  if (!m) return;
+  var t = m.content;
+  [].forEach.call(document.querySelectorAll('form'), function(f) {
+    if ((f.method || '').toUpperCase() === 'POST') {
+      var i = document.createElement('input');
+      i.type = 'hidden'; i.name = 'csrf_token'; i.value = t;
+      f.appendChild(i);
+    }
+  });
+})();
+</script>`
+
 // Nav returns the site header for authenticated users.
-// The admin link is only included when role == "admin".
 func Nav(role string) string {
 	adminLink := ""
 	if role == "admin" {
@@ -49,36 +60,24 @@ func Nav(role string) string {
 </header>`, adminLink)
 }
 
-// PageStart returns the opening HTML for a standard authenticated page.
-// extraHead is inserted before </head> and can be used for page-specific styles
-// or scripts; pass an empty string if not needed.
-func PageStart(title, role string, extraHead string) string {
-	h := head(title)
-	if extraHead != "" {
-		h = fmt.Sprintf(`<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>%s — FrejaID Demo</title>
-  <link rel="stylesheet" href="/static/css/site.css">
-  %s
-</head>`, title, extraHead)
-	}
+// PageStart returns the opening HTML for an authenticated page.
+// csrfToken is embedded in a meta tag and auto-injected into all POST forms.
+func PageStart(title, role, csrfToken string) string {
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
 %s
 <body>
 %s
-<main class="site-main">`, h, Nav(role))
+<main class="site-main">`, head(title, csrfToken), Nav(role))
 }
 
 // PageEnd returns the closing HTML for pages opened with PageStart.
 func PageEnd() string {
-	return footer() + "\n</body></html>"
+	return fmt.Sprintf("%s\n%s\n</body></html>", footer(), csrfScript)
 }
 
 // AdminPageStart returns the opening HTML for an admin page.
-// Admin pages use a wider layout and include a breadcrumb navigation bar.
-func AdminPageStart(title string) string {
+func AdminPageStart(title, csrfToken string) string {
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
 %s
@@ -97,10 +96,10 @@ func AdminPageStart(title string) string {
 </div>
 <main class="site-main wide">
 <h2>%s</h2>
-`, head(title+" — Admin"), title)
+`, head(title+" — Admin", csrfToken), title)
 }
 
 // AdminPageEnd returns the closing HTML for admin pages.
 func AdminPageEnd() string {
-	return footer() + "\n</body></html>"
+	return fmt.Sprintf("%s\n%s\n</body></html>", footer(), csrfScript)
 }

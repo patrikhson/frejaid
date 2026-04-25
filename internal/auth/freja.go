@@ -34,6 +34,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"html"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -117,7 +119,7 @@ func (h *Handler) frejaRegister(w http.ResponseWriter, r *http.Request) {
 	// If it does not, the user authenticated with the wrong Freja account.
 	if !strings.EqualFold(email, reqEmail) {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprintf(w, frejaEmailMismatchHTML, email, reqEmail)
+		fmt.Fprintf(w, frejaEmailMismatchHTML, html.EscapeString(email), html.EscapeString(reqEmail))
 		return
 	}
 
@@ -172,16 +174,30 @@ func (h *Handler) frejaLogin(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// 1. Look up by subject first, then by email as a fallback.
-	//    Using OR means one query covers both cases.
+	// 1. Look up by subject — the stable, opaque identifier from Freja.
 	var userID string
 	err := h.db.QueryRowContext(ctx,
-		`SELECT user_id FROM user_identities
-		 WHERE provider = 'freja'
-		   AND (provider_subject = ? OR LOWER(provider_email) = LOWER(?))
-		 LIMIT 1`,
-		sub, email,
+		`SELECT user_id FROM user_identities WHERE provider = 'freja' AND provider_subject = ?`,
+		sub,
 	).Scan(&userID)
+
+	if err != nil && sub != "" {
+		// Fallback: look up by email.  This handles accounts created before the
+		// subject was stored, or a rare Freja subject rotation.  When we find a
+		// match we immediately update the stored subject so future logins use it.
+		err = h.db.QueryRowContext(ctx,
+			`SELECT user_id FROM user_identities WHERE provider = 'freja' AND LOWER(provider_email) = LOWER(?)`,
+			email,
+		).Scan(&userID)
+		if err == nil {
+			log.Printf("freja login: email fallback used for %s — updating stored subject", email)
+			h.db.ExecContext(ctx,
+				`UPDATE user_identities SET provider_subject = ? WHERE user_id = ? AND provider = 'freja'`,
+				sub, userID,
+			)
+		}
+	}
+
 	if err == nil {
 		// Known identity — log in directly.
 		if err2 := CreateSession(ctx, h.db, w, r, userID, h.isProd); err2 != nil {
@@ -202,13 +218,13 @@ func (h *Handler) frejaLogin(w http.ResponseWriter, r *http.Request) {
 	).Scan(&existingCount)
 	if existingCount > 0 {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprintf(w, frejaLoginExistingAccountHTML, email)
+		fmt.Fprintf(w, frejaLoginExistingAccountHTML, html.EscapeString(email))
 		return
 	}
 
 	// 3. No account at all.
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprintf(w, frejaNoAccountHTML, email)
+	fmt.Fprintf(w, frejaNoAccountHTML, html.EscapeString(email))
 }
 
 // frejaLink handles GET /auth/freja/link (authenticated, Apache-protected).
@@ -268,7 +284,7 @@ func (h *Handler) frejaLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprintf(w, frejaLinkConfirmHTML, email, linkToken)
+	fmt.Fprintf(w, frejaLinkConfirmHTML, html.EscapeString(email), linkToken)
 }
 
 // frejaLinkConfirm handles POST /auth/freja/link/confirm (authenticated).
@@ -276,6 +292,9 @@ func (h *Handler) frejaLink(w http.ResponseWriter, r *http.Request) {
 // The user has reviewed the "Link Freja eID?" confirmation page and submitted.
 // We consume the token, write the identity to user_identities, and redirect.
 func (h *Handler) frejaLinkConfirm(w http.ResponseWriter, r *http.Request) {
+	if !ValidateCSRF(w, r) {
+		return
+	}
 	token := r.FormValue("token")
 	userID := middleware.GetUserID(r)
 	ctx := r.Context()
@@ -316,6 +335,9 @@ func (h *Handler) frejaLinkConfirm(w http.ResponseWriter, r *http.Request) {
 // Removes the Freja eID from the user's account.
 // Requires at least one passkey to remain, so the user can still log in.
 func (h *Handler) frejaUnlink(w http.ResponseWriter, r *http.Request) {
+	if !ValidateCSRF(w, r) {
+		return
+	}
 	userID := middleware.GetUserID(r)
 	ctx := r.Context()
 

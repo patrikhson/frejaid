@@ -31,6 +31,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -39,6 +41,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/paftech/frejaid/internal/hooks"
 	"github.com/paftech/frejaid/internal/mail"
+	"github.com/paftech/frejaid/internal/middleware"
 )
 
 // Handler holds shared dependencies for all auth HTTP handlers.
@@ -49,7 +52,7 @@ type Handler struct {
 	hooks       *hooks.Hooks // integration points for the host application
 	baseURL     string       // used when constructing links in emails
 	isProd      bool         // controls cookie Secure flag
-	sessionKey  string       // session secret (reserved for future signing)
+	sessionKey  string       // SESSION_SECRET — used as HMAC key for CSRF tokens
 	adminEmails []string     // emails that are auto-approved as admin on first signup
 }
 
@@ -141,8 +144,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, requireAuth func(http.Handl
 	mux.HandleFunc("POST /auth/login/begin", h.beginLogin)
 	mux.HandleFunc("POST /auth/login/finish", h.finishLogin)
 
-	// ── Logout ───────────────────────────────────────────────────────────────
-	mux.HandleFunc("POST /auth/logout", h.logout)
+	// ── Logout (behind requireAuth so the CSRF token is in context) ──────────
+	mux.Handle("POST /auth/logout", requireAuth(http.HandlerFunc(h.logout)))
 
 	// ── Passkey management (authenticated) ───────────────────────────────────
 	mux.Handle("GET /settings/passkeys", requireAuth(http.HandlerFunc(h.showPasskeys)))
@@ -202,7 +205,7 @@ func (h *Handler) submitRequest(w http.ResponseWriter, r *http.Request) {
 	h.db.QueryRowContext(ctx, `SELECT id FROM users WHERE LOWER(username) = LOWER(?)`, email).Scan(&existingUserID)
 	if existingUserID != "" {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprintf(w, accountExistsHTML, email, email)
+		fmt.Fprintf(w, accountExistsHTML, html.EscapeString(email), html.EscapeString(email))
 		return
 	}
 
@@ -498,10 +501,9 @@ type storedCredential struct {
 
 // ─── Admin approval ──────────────────────────────────────────────────────────
 
-// SendApprovalEmail is called by the admin handler when an admin approves a
-// registration request.  It creates the users row, the credential row (passkey)
-// or identity row (Freja), marks the request as completed, and sends the user
-// an email telling them they can now log in.
+// SendApprovalEmail creates the user account inside a transaction, then sends
+// the approval email after commit.  A failed email send is logged but does not
+// roll back the account — the admin can resend manually.
 //
 // Returns the new user ID so the caller can do additional work (e.g. set role).
 func SendApprovalEmail(ctx context.Context, db *sql.DB, mailer *mail.Mailer, h *hooks.Hooks, baseURL, requestID string) (string, error) {
@@ -517,78 +519,89 @@ func SendApprovalEmail(ctx context.Context, db *sql.DB, mailer *mail.Mailer, h *
 		return "", fmt.Errorf("registration not found: %w", err)
 	}
 
-	var userID string
-	var approvalErr error
-	if provider == "freja" {
-		userID, approvalErr = sendApprovalFreja(ctx, db, mailer, baseURL, requestID, pendingUserID, name, email, frejaSub)
-	} else {
-		userID, approvalErr = sendApprovalPasskey(ctx, db, mailer, baseURL, requestID, pendingUserID, name, email, credJSON)
+	// Wrap all writes in a transaction so a partial failure leaves no orphaned rows.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("begin tx: %w", err)
 	}
-	if approvalErr != nil {
-		return "", approvalErr
+	defer tx.Rollback()
+
+	var userID string
+	if provider == "freja" {
+		userID, err = sendApprovalFreja(ctx, tx, requestID, pendingUserID, name, email, frejaSub)
+	} else {
+		userID, err = sendApprovalPasskey(ctx, tx, requestID, pendingUserID, name, email, credJSON)
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit: %w", err)
+	}
+
+	// Send email after commit — the account exists even if the email fails.
+	var mailErr error
+	if provider == "freja" {
+		mailErr = mailer.SendApprovedFreja(email, name, baseURL+"/auth/login")
+	} else {
+		mailErr = mailer.SendApproved(email, name, baseURL+"/auth/login")
+	}
+	if mailErr != nil {
+		log.Printf("approval email error for %s: %v", email, mailErr)
 	}
 
 	h.CallOnUserCreated(ctx, hooks.User{
 		ID:          userID,
 		Email:       email,
 		DisplayName: name,
-		Role:        "passive", // admin elevation happens after this if needed
+		Role:        "passive",
 		Provider:    hooks.LoginMethod(provider),
 	})
 
 	return userID, nil
 }
 
-// sendApprovalPasskey creates the user + passkey credential and sends the
-// "you're approved" email for a passkey registration.
-func sendApprovalPasskey(ctx context.Context, db *sql.DB, mailer *mail.Mailer, baseURL, requestID, pendingUserID, name, email string, credJSON sql.NullString) (string, error) {
+// sendApprovalPasskey creates the user + passkey credential inside tx.
+func sendApprovalPasskey(ctx context.Context, tx *sql.Tx, requestID, pendingUserID, name, email string, credJSON sql.NullString) (string, error) {
 	if !credJSON.Valid || credJSON.String == "" {
 		return "", fmt.Errorf("passkey not yet registered")
 	}
-
 	var cred storedCredential
 	if err := json.Unmarshal([]byte(credJSON.String), &cred); err != nil {
 		return "", fmt.Errorf("corrupt credential data: %w", err)
 	}
 
-	// Create the user row using the pre-allocated pending_user_id.
 	userID := pendingUserID
-	_, err := db.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO users (id, username, display_name, role) VALUES (?, ?, ?, 'passive')`,
 		userID, email, name,
-	)
-	if err != nil {
+	); err != nil {
 		return "", fmt.Errorf("create user: %w", err)
 	}
 
-	// Store the passkey credential now that the users row exists.
-	_, err = db.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO webauthn_credentials
 		 (id, user_id, credential_id, public_key, aaguid, sign_count, backup_eligible, backup_state, name)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Primary passkey')`,
 		uuid.NewString(), userID, cred.ID, cred.PublicKey, cred.AAGUID, cred.SignCount, cred.BackupEligible, cred.BackupState,
-	)
-	if err != nil {
+	); err != nil {
 		return "", fmt.Errorf("store credential: %w", err)
 	}
 
-	db.ExecContext(ctx,
+	tx.ExecContext(ctx,
 		`UPDATE registration_requests SET status = 'completed', user_id = ? WHERE id = ?`,
 		userID, requestID,
 	)
-
-	return userID, mailer.SendApproved(email, name, baseURL+"/auth/login")
+	return userID, nil
 }
 
-// sendApprovalFreja creates the user + Freja identity and sends the approval
-// email for a Freja eID registration.
-func sendApprovalFreja(ctx context.Context, db *sql.DB, mailer *mail.Mailer, baseURL, requestID, pendingUserID, name, email string, frejaSub sql.NullString) (string, error) {
+// sendApprovalFreja creates the user + Freja identity inside tx.
+func sendApprovalFreja(ctx context.Context, tx *sql.Tx, requestID, pendingUserID, name, email string, frejaSub sql.NullString) (string, error) {
 	userID := pendingUserID
-	_, err := db.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO users (id, username, display_name, role) VALUES (?, ?, ?, 'passive')`,
 		userID, email, name,
-	)
-	if err != nil {
+	); err != nil {
 		return "", fmt.Errorf("create user: %w", err)
 	}
 
@@ -596,21 +609,17 @@ func sendApprovalFreja(ctx context.Context, db *sql.DB, mailer *mail.Mailer, bas
 	if frejaSub.Valid {
 		sub = frejaSub.String
 	}
-	// ON CONFLICT DO NOTHING: if the Freja identity was already linked somehow
-	// (shouldn't happen in normal flow), we don't overwrite it.
-	db.ExecContext(ctx,
+	tx.ExecContext(ctx,
 		`INSERT INTO user_identities (id, user_id, provider, provider_subject, provider_email)
 		 VALUES (?, ?, 'freja', ?, ?)
 		 ON CONFLICT (provider, provider_subject) DO NOTHING`,
 		uuid.NewString(), userID, sub, email,
 	)
-
-	db.ExecContext(ctx,
+	tx.ExecContext(ctx,
 		`UPDATE registration_requests SET status = 'completed', user_id = ? WHERE id = ?`,
 		userID, requestID,
 	)
-
-	return userID, mailer.SendApprovedFreja(email, name, baseURL+"/auth/login")
+	return userID, nil
 }
 
 // ─── Pending page ────────────────────────────────────────────────────────────
@@ -748,15 +757,12 @@ func (h *Handler) finishLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
-	// Retrieve the user ID before deleting the session so we can pass it to
-	// the hook (the session row is gone after DeleteSession returns).
-	s, _ := GetSession(r.Context(), h.db, r)
-	DeleteSession(r.Context(), h.db, w, r)
-
-	if s != nil {
-		h.hooks.CallOnLogout(r.Context(), s.UserID)
+	if !ValidateCSRF(w, r) {
+		return
 	}
-
+	userID := middleware.GetUserID(r)
+	DeleteSession(r.Context(), h.db, w, r)
+	h.hooks.CallOnLogout(r.Context(), userID)
 	http.Redirect(w, r, "/auth/login", http.StatusSeeOther)
 }
 
