@@ -190,7 +190,11 @@ func (h *Handler) frejaLogin(w http.ResponseWriter, r *http.Request) {
 			email,
 		).Scan(&userID)
 		if err == nil {
-			log.Printf("freja login: email fallback used for %s — updating stored subject", email)
+			// WARN: email fallback used — the stored subject did not match.
+			// This is a self-healing path: we update the subject so future
+			// logins use the stable sub claim.  Causes: account created before
+			// sub storage, or a Freja subject rotation (rare).
+			log.Printf("WARN freja login: subject lookup failed, email fallback matched %s — storing new subject %q", email, sub)
 			h.db.ExecContext(ctx,
 				`UPDATE user_identities SET provider_subject = ? WHERE user_id = ? AND provider = 'freja'`,
 				sub, userID,

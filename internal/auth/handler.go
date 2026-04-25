@@ -609,16 +609,20 @@ func sendApprovalFreja(ctx context.Context, tx *sql.Tx, requestID, pendingUserID
 	if frejaSub.Valid {
 		sub = frejaSub.String
 	}
-	tx.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO user_identities (id, user_id, provider, provider_subject, provider_email)
 		 VALUES (?, ?, 'freja', ?, ?)
 		 ON CONFLICT (provider, provider_subject) DO NOTHING`,
 		uuid.NewString(), userID, sub, email,
-	)
-	tx.ExecContext(ctx,
+	); err != nil {
+		return "", fmt.Errorf("store freja identity: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE registration_requests SET status = 'completed', user_id = ? WHERE id = ?`,
 		userID, requestID,
-	)
+	); err != nil {
+		return "", fmt.Errorf("mark request completed: %w", err)
+	}
 	return userID, nil
 }
 
