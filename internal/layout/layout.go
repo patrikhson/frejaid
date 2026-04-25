@@ -85,15 +85,14 @@ func AdminPageStart(title string) string {
 <body>
 <header class="site-header wide">
   <div class="site-header__inner">
-    <a href="/admin" class="site-logo">FrejaID Demo — Admin</a>
+    <a href="/" class="site-logo">FrejaID Demo — Admin</a>
   </div>
 </header>
 <div class="admin-bar">
   <div class="admin-bar__inner">
-    <a href="/admin">Dashboard</a>
+    <a href="/admin">Admin</a>
     <a href="/admin/registrations">Registrations</a>
     <a href="/admin/users">Users</a>
-    <a href="/">← Back to site</a>
   </div>
 </div>
 <main class="site-main wide">
