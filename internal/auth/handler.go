@@ -324,7 +324,7 @@ func (h *Handler) showChoose(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprintf(w, chooseMethodHTML, name, email, token, token)
+	fmt.Fprintf(w, chooseMethodHTML, html.EscapeString(name), html.EscapeString(email), token, token)
 }
 
 // ─── Passkey registration (WebAuthn) ─────────────────────────────────────────
@@ -350,7 +350,7 @@ func (h *Handler) showRegisterPasskey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprintf(w, registerPasskeyHTML, name, token)
+	fmt.Fprintf(w, registerPasskeyHTML, html.EscapeString(name), token)
 }
 
 // beginRegisterPasskey starts the WebAuthn registration ceremony.
@@ -588,10 +588,12 @@ func sendApprovalPasskey(ctx context.Context, tx *sql.Tx, requestID, pendingUser
 		return "", fmt.Errorf("store credential: %w", err)
 	}
 
-	tx.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE registration_requests SET status = 'completed', user_id = ? WHERE id = ?`,
 		userID, requestID,
-	)
+	); err != nil {
+		return "", fmt.Errorf("mark request completed: %w", err)
+	}
 	return userID, nil
 }
 
