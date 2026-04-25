@@ -3,6 +3,7 @@
 *.db-shm
 *.db-wal
 /frejaid
+/frejaid-new
 /frejaid-server
 node_modules/
 dist/
