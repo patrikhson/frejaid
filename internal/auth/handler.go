@@ -28,12 +28,16 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -188,7 +192,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, requireAuth func(http.Handl
 
 func (h *Handler) showRequestForm(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, requestFormHTML)
+	fmt.Fprintf(w, requestFormHTML, h.formToken())
 }
 
 // submitRequest handles the initial registration form (name + email).
@@ -196,7 +200,24 @@ func (h *Handler) showRequestForm(w http.ResponseWriter, r *http.Request) {
 // Security note: we return an identical success page whether or not the email
 // is already registered, so that an attacker cannot enumerate accounts by
 // submitting email addresses and observing the response.
+//
+// Two bot checks run before any database work:
+//  1. Honeypot: b_phone_ext must be empty (bots fill all fields; humans never
+//     see this field because CSS positions it off-screen).
+//  2. Timing token: _t must be a valid HMAC-signed timestamp issued ≥2 seconds
+//     ago (bots submit near-instantly; legitimate users take longer).
 func (h *Handler) submitRequest(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("b_phone_ext") != "" {
+		log.Printf("bot-check: honeypot filled on signup from %s", r.RemoteAddr)
+		h.showRequestSuccess(w, r)
+		return
+	}
+	if !h.checkFormToken(r.FormValue("_t")) {
+		log.Printf("bot-check: timing token invalid or too fast on signup from %s", r.RemoteAddr)
+		h.showRequestSuccess(w, r)
+		return
+	}
+
 	name := r.FormValue("name")
 	email := r.FormValue("email")
 
@@ -865,6 +886,41 @@ func publicPage(title, body string) string {
 </body></html>`, title, title, body)
 }
 
+// formToken generates a signed timestamp embedded as a hidden field in forms
+// that are shown to unauthenticated users.  checkFormToken verifies it on
+// submit.  Together they detect bots that submit forms near-instantly.
+//
+// The token is: unix_timestamp + "." + HMAC-SHA256(timestamp, sessionKey).
+// We sign with sessionKey so the token cannot be forged or pre-computed
+// offline.  The 2-second minimum gives real users enough time to submit
+// while rejecting automated submissions that arrive in milliseconds.
+func (h *Handler) formToken() string {
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(h.sessionKey))
+	mac.Write([]byte(ts))
+	return ts + "." + hex.EncodeToString(mac.Sum(nil))
+}
+
+// checkFormToken returns true if the token signature is valid and at least
+// 2 seconds have elapsed since it was issued.
+func (h *Handler) checkFormToken(token string) bool {
+	parts := strings.SplitN(token, ".", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	ts, sig := parts[0], parts[1]
+	mac := hmac.New(sha256.New, []byte(h.sessionKey))
+	mac.Write([]byte(ts))
+	if !hmac.Equal([]byte(sig), []byte(hex.EncodeToString(mac.Sum(nil)))) {
+		return false
+	}
+	issued, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil {
+		return false
+	}
+	return time.Now().Unix()-issued >= 2
+}
+
 // ─── Inline HTML templates ───────────────────────────────────────────────────
 // All UI for the auth flow lives here so the complete flow can be read in one
 // file.  In a production app you would use html/template files instead.
@@ -905,6 +961,14 @@ const accountExistsHTML = `<!DOCTYPE html>
 <footer class="site-footer"><p>FrejaID Demo</p></footer>
 </body></html>`
 
+// requestFormHTML is the registration form.
+// Format arg: %%s = formToken() value for the timing check hidden field.
+//
+// Bot defences embedded in the form:
+//   b_phone_ext — honeypot: positioned off-screen by .hp-field CSS so humans
+//                 never see or fill it, but bots that fill all fields will.
+//   _t          — timing token: HMAC-signed unix timestamp issued when the
+//                 form was served; rejected on submit if < 2 seconds old.
 const requestFormHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -922,6 +986,10 @@ const requestFormHTML = `<!DOCTYPE html>
 <main class="site-main">
 <h2>Request Access</h2>
 <form class="form" method="POST" action="/auth/request">
+  <div class="hp-field" aria-hidden="true">
+    <label>Leave blank<input type="text" name="b_phone_ext" tabindex="-1" autocomplete="off"></label>
+  </div>
+  <input type="hidden" name="_t" value="%s">
   <label>Your name<input type="text" name="name" required></label>
   <label>Email address<input type="email" name="email" required></label>
   <button type="submit">Request Access</button>

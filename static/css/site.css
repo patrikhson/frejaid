@@ -382,3 +382,7 @@ tbody tr:hover td      { background: #faf8f5; }
   table                { font-size: 0.8rem; }
   button, .btn         { padding: 7px 12px; }
 }
+
+/* Honeypot field — rendered off-screen so humans never see it.
+   Bots that fill every visible field will trigger the server-side check. */
+.hp-field { position: absolute; left: -9999px; top: -9999px; }
