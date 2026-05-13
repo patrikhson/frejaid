@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -71,6 +72,12 @@ type Config struct {
 	// registration.  Use this to bootstrap the first admin without a
 	// chicken-and-egg approval problem.
 	AdminEmails []string
+
+	// RateLimitPerHour is the maximum number of requests a single IP may make
+	// per hour to the public unauthenticated POST endpoints (registration,
+	// login begin, credential reset).  Set via RATE_LIMIT_PER_HOUR.
+	// Default: 20 (generous for a demo; tighten in production if needed).
+	RateLimitPerHour int
 }
 
 // Load reads environment variables and returns a validated Config.
@@ -91,6 +98,7 @@ func Load() (*Config, error) {
 		SMTPPass:              getEnv("SMTP_PASS", ""),
 		SMTPFrom:              getEnv("SMTP_FROM", ""),
 		AdminEmails:           splitEmails(getEnv("ADMIN_EMAIL", "")),
+		RateLimitPerHour:      getEnvInt("RATE_LIMIT_PER_HOUR", 20),
 	}
 
 	c.IsProd = c.AppEnv == "production"
@@ -112,6 +120,17 @@ func Load() (*Config, error) {
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+// getEnvInt returns the integer value of key, or fallback if the variable is
+// unset, empty, or not a valid integer.
+func getEnvInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

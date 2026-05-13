@@ -116,11 +116,21 @@ func (h *Handler) maybeAutoApprove(ctx context.Context, requestID, email string)
 }
 
 // RegisterRoutes wires all auth routes into mux.
+//
 // requireAuth is the RequireAuth middleware returned by auth.RequireAuth().
-func (h *Handler) RegisterRoutes(mux *http.ServeMux, requireAuth func(http.Handler) http.Handler) {
+//
+// rateLimiter is applied to public unauthenticated POST endpoints that are
+// attractive spam or enumeration targets:
+//   - POST /auth/request           — creates a DB row and sends a verification email
+//   - POST /auth/login/begin       — queries the DB and leaks timing about account existence
+//   - POST /auth/request-credential-reset — notifies all admins by email
+//
+// The caller constructs the limiter with middleware.NewIPRateLimiter() using a
+// limit loaded from config (RATE_LIMIT_PER_HOUR env var).
+func (h *Handler) RegisterRoutes(mux *http.ServeMux, requireAuth func(http.Handler) http.Handler, rateLimiter func(http.Handler) http.Handler) {
 	// ── Registration ─────────────────────────────────────────────────────────
 	mux.HandleFunc("GET /auth/request", h.showRequestForm)
-	mux.HandleFunc("POST /auth/request", h.submitRequest)
+	mux.Handle("POST /auth/request", rateLimiter(http.HandlerFunc(h.submitRequest)))
 	mux.HandleFunc("GET /auth/verify-email", h.showVerifyEmail)
 	mux.HandleFunc("POST /auth/verify-email", h.verifyEmail)
 	mux.HandleFunc("GET /auth/choose", h.showChoose)
@@ -141,7 +151,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, requireAuth func(http.Handl
 
 	// ── Passkey login ────────────────────────────────────────────────────────
 	mux.HandleFunc("GET /auth/login", h.showLogin)
-	mux.HandleFunc("POST /auth/login/begin", h.beginLogin)
+	mux.Handle("POST /auth/login/begin", rateLimiter(http.HandlerFunc(h.beginLogin)))
 	mux.HandleFunc("POST /auth/login/finish", h.finishLogin)
 
 	// ── Logout (behind requireAuth so the CSRF token is in context) ──────────
@@ -167,7 +177,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, requireAuth func(http.Handl
 	mux.HandleFunc("GET /auth/check", h.checkAuth)
 
 	// ── Credential reset (unauthenticated — for users locked out) ────────────
-	mux.HandleFunc("POST /auth/request-credential-reset", h.requestCredentialReset)
+	mux.Handle("POST /auth/request-credential-reset", rateLimiter(http.HandlerFunc(h.requestCredentialReset)))
 	mux.HandleFunc("GET /auth/reset-passkey", h.showResetPasskey)
 	mux.HandleFunc("POST /auth/reset-passkey/begin", h.beginResetPasskey)
 	mux.HandleFunc("POST /auth/reset-passkey/finish", h.finishResetPasskey)

@@ -139,8 +139,11 @@ func main() {
 	// reject unauthenticated / unauthorised requests respectively.
 	requireAuth := auth.RequireAuth(database, cfg.SessionSecret)
 	requireAdmin := auth.RequireRole(database, cfg.SessionSecret, "admin")
+	// rateLimiter caps unauthenticated POST requests per client IP per hour.
+	// This throttles registration spam, login probing, and credential-reset floods.
+	rateLimiter := middleware.NewIPRateLimiter(cfg.RateLimitPerHour)
 
-	authHandler.RegisterRoutes(mux, requireAuth)
+	authHandler.RegisterRoutes(mux, requireAuth, rateLimiter)
 	user.NewHandler(database, mailer, appHooks, cfg.AppBaseURL, cfg.IsProd).RegisterRoutes(mux, requireAuth)
 	admin.NewHandler(database, mailer, appHooks, cfg.AppBaseURL).RegisterRoutes(mux, requireAdmin)
 	home.NewHandler(database).RegisterRoutes(mux, requireAuth)
