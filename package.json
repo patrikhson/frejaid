@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "devDependencies": {
-    "tailwindcss": "^3.4.0"
+    "tailwindcss": "^4.3.3"
   },
   "scripts": {
     "css:build": "tailwindcss -i ./static/css/input.css -o ./static/css/app.css --minify",
